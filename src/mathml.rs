@@ -194,30 +194,34 @@ impl Element {
     fn bounds(&self) -> Rect {
         match self {
             &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
-                ly.as_ref().map(|l| l.bounds()).unwrap()
+                ly.as_ref().map(|l| {
+                    let b = l.bounds();
+                    b.offset(Point::xy(0.0, b.h/2.0))
+                }).unwrap()
             },
             &Element::Row(ref els) => {
-                let (mut width, mut height) = (0.0, 0.0);
+                let (mut width, mut height) = (0.0, 0f32);
                 for b in els.iter().map(|e| e.bounds()) {
-                    width += b.x + b.w;
-                    height += b.y + b.h;
+                    width += b.x + b.w + 2.0;
+                    height = height.max(b.h);
                 }
                 Rect::xywh(0.0, 0.0, width, height)
             },
             &Element::Fraction { ref numer, ref denom } => {
-                union_rect(numer.bounds().offset(Point::xy(0.0, -2.0)), denom.bounds().offset(Point::xy(0.0,2.0)))
+                let nb = numer.bounds();
+                let db = denom.bounds();
+                Rect::xywh(0.0, 0.0, nb.w.max(db.w), nb.h + db.h + 2.0)
             },
             &Element::Sqrt(ref c) => {
-                let mut r = c.bounds();
-                r.x -= 4.0; r.w += 6.0;
-                r.y -= 2.0; r.h += 2.0;
-                r
+                let mut b = c.bounds();
+                b.w += 10.0;
+                b
             }
             &Element::Root { ref base, ref index } => {
-                let mut r = base.bounds();
-                r.x -= 4.0; r.w += 6.0;
-                r.y -= 2.0; r.h += 2.0;
-                union_rect(r, index.bounds().offset(Point::xy(-6.0, r.h/2.0)))
+                let mut b = base.bounds();
+                let i = index.bounds();
+                b.w += 7.0 + i.w;
+                b
             }
             &Element::Subscript { ref base, ref script } => {
                 let bb = base.bounds();
@@ -241,25 +245,54 @@ impl Element {
     }
 
     fn draw(&self, p: Point, rx: &mut RenderContext) {
+        fn draw_radical(rx: &mut RenderContext, p: Point, eb: Rect, d: f32) {
+            // draw radical sign
+            let p1 = p + Point::xy(d, 0.0);
+            let p2 = p + Point::xy(d+2.0, eb.h/2.0);
+            let p3 = p + Point::xy(d+6.0, -eb.h/2.0);
+            let p4 = p + Point::xy(d+8.0 + eb.w, -eb.h/2.0);
+            let p5 = p + Point::xy(d+8.0 + eb.w, 5.0 -eb.h/2.0);
+            rx.draw_line(p, p1, 1.0);
+            rx.draw_line(p1, p2, 1.0);
+            rx.draw_line(p2, p3, 1.0);
+            rx.draw_line(p3, p4, 1.0);
+            rx.draw_line(p4, p5, 1.0);
+        }
+
+        //rx.stroke_rect(self.bounds().offset(p), 1.0);
+
         match self {
             &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
-                rx.draw_text_layout(p, ly.as_ref().unwrap());
+                let ly = ly.as_ref().unwrap();
+                let b = ly.bounds();
+                rx.draw_text_layout(p - Point::xy(0.0, b.h/2.0), ly);
             },
             &Element::Row(ref els) => {
                 let mut pp = p;
                 for e in els {
                     e.draw(pp, rx);
                     let eb = e.bounds();
-                    pp.x += eb.x+eb.w;
+                    pp.x += eb.x+eb.w+2.0;
                 }
             },
             &Element::Fraction { ref numer, ref denom } => {
                 let nb = numer.bounds();
                 let db = denom.bounds();
-                let th = nb.y+nb.h+db.y+db.h;
-                numer.draw(p + Point::xy(0.0, -th/8.0), rx);
-                denom.draw(p + Point::xy(0.0, th/8.0), rx);
-                rx.draw_line(p + Point::xy(0.0, th/8.0), p + Point::xy((nb.x+nb.w).max(db.x+db.w), th/8.0), 1.0);
+                numer.draw(p - Point::xy(0.0, nb.h / 2.0 + 1.0), rx);
+                rx.draw_line(p, p + Point::xy(nb.w.max(db.w), 0.0), 1.0);
+                denom.draw(p + Point::xy(0.0, db.h / 2.0 + 1.0), rx);
+            },
+            &Element::Sqrt(ref el) => {
+                let eb = el.bounds();
+                draw_radical(rx, p, eb, 2.0);
+                el.draw(p + Point::xy(9.0, 0.0), rx);
+            },
+            &Element::Root { ref base, ref index } => {
+                let eb = base.bounds();
+                let ib = index.bounds();
+                draw_radical(rx, p, eb, ib.w);
+                base.draw(p + Point::xy(ib.w+7.0, 0.0), rx);
+                index.draw(p - Point::xy(0.0,ib.h/2.0), rx);
             }
             _ => panic!("draw silly element")
         }
