@@ -62,19 +62,6 @@ pub enum Element {
     Subsuperscript { base: Box<Element>, subscript: Box<Element>, superscript: Box<Element> }
 }
 
-fn check_end_element<R: Read>(reader: &mut EventReader<R>, s: &String) -> Result<(), MathMLParseError> {
-    match reader.next()? {
-        XmlEvent::EndElement { name } => {
-            if name.local_name == *s {
-                Ok(())
-            } else {
-                Err(MathMLParseError::UnexpectedXMLTag(name.local_name))
-            }
-        },
-        e => Err(MathMLParseError::UnexpectedXMLEvent(e))
-    }
-}
-
 impl Element {
     fn is_placeholder(&self) -> bool {
         match self {
@@ -158,60 +145,44 @@ impl Element {
             _ => Err(MathMLParseError::AppendToLeaf)
         }
     }
-    
-    fn children_from_mathml<R: Read>(reader: &mut EventReader<R>, rx: &mut RenderContext, fnt: &Font, name: &OwnedName) -> Result<Vec<Element>, MathMLParseError> {
-        let mut elm = Vec::new();
-        'm: loop {
-            match Element::from_mathml(reader, rx, fnt) {
-                Ok(e) => elm.push(e),
-                Err(MathMLParseError::UnexpectedXMLEvent(XmlEvent::EndElement{ name: n })) => {
-                    if n == *name {
-                        break 'm
-                    } else {
-                        panic!("heck!");
-                    }
-                }
-                Err(e) => return Err(e)
-            }
-        }
-        Ok(elm)
-    }
 
     fn from_mathml<R: Read>(reader: &mut EventReader<R>, rx: &mut RenderContext, fnt: &Font) -> Result<Element, MathMLParseError> {
-        match reader.next()? {
-            XmlEvent::StartElement { name, .. } => {
-                match name.local_name.as_str() {
-                    "mi" => {
-                        match reader.next()? {
-                            XmlEvent::Characters(s) => {
-                                check_end_element(reader, &name.local_name).and(Ok(Element::Id(s, None)))
-                            }
-                            e => Err(MathMLParseError::UnexpectedXMLEvent(e))
-                        }
-                    }
-                    "mo" => {
-                        match reader.next()? {
-                            XmlEvent::Characters(s) => {
-                                check_end_element(reader, &name.local_name).and(Ok(Element::Operator(s, None)))
-                            }
-                            e => Err(MathMLParseError::UnexpectedXMLEvent(e))
-                        }
-                    }
-                    "mn" => {
-                        match reader.next()? {
-                            XmlEvent::Characters(s) => {
-                                check_end_element(reader, &name.local_name).and(Ok(Element::Number(s, None)))
-                            }
-                            e => Err(MathMLParseError::UnexpectedXMLEvent(e))
-                        }
-                    }
-                    "math" | "mrow" => {
-                        Element::children_from_mathml(reader, rx, fnt, &name).map(|es| Element::Row(es))
-                    }
-                    _ => Err(MathMLParseError::UnexpectedXMLTag(name.local_name))
+
+        let mut els: Vec<Element> = Vec::new();
+
+        loop {
+            match reader.next()? {
+                XmlEvent::StartElement { name, .. } => {
+                    els.push(match name.local_name.as_str()  {
+                        "mi" => Element::Id(String::new(), None),
+                        "mo" => Element::Operator(String::new(), None),
+                        "mn" => Element::Number(String::new(), None),
+                        "math" | "row" => Element::Row(Vec::new()),
+                        "msqrt" => Element::Sqrt(Box::new(Element::ParsePlaceholder)),
+                        "mfrac" => Element::Fraction { numer: Box::new(Element::ParsePlaceholder), denom: Box::new(Element::ParsePlaceholder) },
+                        "mroot" => Element::Root { base: Box::new(Element::ParsePlaceholder), index: Box::new(Element::ParsePlaceholder) },
+                        "msub" => Element::Subscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) },
+                        "msup" => Element::Superscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) },
+                        "msubsup" => Element::Subsuperscript { base: Box::new(Element::ParsePlaceholder), subscript: Box::new(Element::ParsePlaceholder), superscript: Box::new(Element::ParsePlaceholder) },
+                        _ => return Err(MathMLParseError::UnexpectedXMLTag(name.local_name))
+                    });
                 }
-            },
-            e => Err(MathMLParseError::UnexpectedXMLEvent(e))
+                XmlEvent::Characters(s) => {
+                    els.last_mut().ok_or_else(|| MathMLParseError::UnexpectedXMLEvent(XmlEvent::Characters(s.clone())))
+                        .and_then(|e| e.set_body(s, rx, fnt))?;
+                }
+                e@XmlEvent::EndElement { .. } => {
+                    if els.len() == 0 {
+                        return Err(MathMLParseError::UnexpectedXMLEvent(e));
+                    } else if els.len() == 1 {
+                        return Ok(els.pop().unwrap());
+                    } else {
+                        let el = els.pop().ok_or_else(|| MathMLParseError::UnexpectedXMLEvent(e))?;
+                        els.last_mut().unwrap().append_child(el)?;
+                    }
+                }
+                e => return Err(MathMLParseError::UnexpectedXMLEvent(e))
+            }
         }
     }
 }
