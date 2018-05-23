@@ -85,8 +85,8 @@ impl Element {
             &mut Element::Id(ref mut body, ref mut layout) |
             &mut Element::Number(ref mut body, ref mut layout) |
             &mut Element::Operator(ref mut body, ref mut layout) => {
-                *body = s;
                 *layout = Some(rx.new_text_layout(&s, fnt, 512.0, 512.0).expect("create text layout"));
+                *body = s;
             }
             _ => return Err(MathMLParseError::AppendToFullNode)
         }
@@ -163,7 +163,7 @@ impl Element {
                         "mi" => Element::Id(String::new(), None),
                         "mo" => Element::Operator(String::new(), None),
                         "mn" => Element::Number(String::new(), None),
-                        "math" | "row" => Element::Row(Vec::new()),
+                        "math" | "mrow" => Element::Row(Vec::new()),
                         "msqrt" => Element::Sqrt(Box::new(Element::ParsePlaceholder)),
                         "mfrac" => Element::Fraction { numer: Box::new(Element::ParsePlaceholder), denom: Box::new(Element::ParsePlaceholder) },
                         "mroot" => Element::Root { base: Box::new(Element::ParsePlaceholder), index: Box::new(Element::ParsePlaceholder) },
@@ -194,18 +194,74 @@ impl Element {
     fn bounds(&self) -> Rect {
         match self {
             &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
-                ly.unwrap().bounds()
+                ly.as_ref().map(|l| l.bounds()).unwrap()
             },
             &Element::Row(ref els) => {
-                els.iter().map(|e| e.bounds()).fold(Rect::xywh(1e9, 1e9, -1e9, -1e9), union_rect)
+                let (mut width, mut height) = (0.0, 0.0);
+                for b in els.iter().map(|e| e.bounds()) {
+                    width += b.x + b.w;
+                    height += b.y + b.h;
+                }
+                Rect::xywh(0.0, 0.0, width, height)
+            },
+            &Element::Fraction { ref numer, ref denom } => {
+                union_rect(numer.bounds().offset(Point::xy(0.0, -2.0)), denom.bounds().offset(Point::xy(0.0,2.0)))
+            },
+            &Element::Sqrt(ref c) => {
+                let mut r = c.bounds();
+                r.x -= 4.0; r.w += 6.0;
+                r.y -= 2.0; r.h += 2.0;
+                r
             }
+            &Element::Root { ref base, ref index } => {
+                let mut r = base.bounds();
+                r.x -= 4.0; r.w += 6.0;
+                r.y -= 2.0; r.h += 2.0;
+                union_rect(r, index.bounds().offset(Point::xy(-6.0, r.h/2.0)))
+            }
+            &Element::Subscript { ref base, ref script } => {
+                let bb = base.bounds();
+                let sb = script.bounds();
+                union_rect(bb, sb.offset(Point::xy(bb.x+bb.w, bb.h+sb.h/2.0)))
+            }
+            &Element::Superscript { ref base, ref script } => {
+                let bb = base.bounds();
+                let sb = script.bounds();
+                union_rect(bb, sb.offset(Point::xy(bb.x+bb.w, sb.h/2.0)))
+            }
+            &Element::Subsuperscript { ref base, ref subscript, ref superscript } => {
+                let bb = base.bounds();
+                let sub = subscript.bounds();
+                let spb = superscript.bounds();
+                union_rect(bb, union_rect(sub.offset(Point::xy(bb.x+bb.w, bb.h + sub.h/2.0)), 
+                                          sub.offset(Point::xy(bb.x+bb.w, spb.h/2.0))))
+            }
+            _ => panic!("bounds for silly element")
         }
     }
 
     fn draw(&self, p: Point, rx: &mut RenderContext) {
         match self {
             &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
+                rx.draw_text_layout(p, ly.as_ref().unwrap());
             },
+            &Element::Row(ref els) => {
+                let mut pp = p;
+                for e in els {
+                    e.draw(pp, rx);
+                    let eb = e.bounds();
+                    pp.x += eb.x+eb.w;
+                }
+            },
+            &Element::Fraction { ref numer, ref denom } => {
+                let nb = numer.bounds();
+                let db = denom.bounds();
+                let th = nb.y+nb.h+db.y+db.h;
+                numer.draw(p + Point::xy(0.0, -th/8.0), rx);
+                denom.draw(p + Point::xy(0.0, th/8.0), rx);
+                rx.draw_line(p + Point::xy(0.0, th/8.0), p + Point::xy((nb.x+nb.w).max(db.x+db.w), th/8.0), 1.0);
+            }
+            _ => panic!("draw silly element")
         }
     }
 } 
@@ -225,6 +281,6 @@ impl MathExpression {
     }
 
     pub fn draw(&self, p: Point, rx: &mut RenderContext) {
-        self.root.draw(rx, p);
+        self.root.draw(p, rx);
     }
 }
