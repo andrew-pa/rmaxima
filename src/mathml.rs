@@ -62,6 +62,10 @@ pub enum Element {
     Subsuperscript { base: Box<Element>, subscript: Box<Element>, superscript: Box<Element> }
 }
 
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    Rect::xywh(a.x.min(b.x), a.y.min(b.y), a.w.max(b.w), a.h.max(b.h))
+}
+
 impl Element {
     fn is_placeholder(&self) -> bool {
         match self {
@@ -78,9 +82,12 @@ impl Element {
 
     fn set_body(&mut self, s: String, rx: &mut RenderContext, fnt: &Font) -> Result<(), MathMLParseError> {
         match self {
-            &mut Element::Id(ref mut body, ref mut layout) => { *body = s; }
-            &mut Element::Number(ref mut body, ref mut layout) => { *body = s; }
-            &mut Element::Operator(ref mut body, ref mut layout) => { *body = s; }
+            &mut Element::Id(ref mut body, ref mut layout) |
+            &mut Element::Number(ref mut body, ref mut layout) |
+            &mut Element::Operator(ref mut body, ref mut layout) => {
+                *body = s;
+                *layout = Some(rx.new_text_layout(&s, fnt, 512.0, 512.0).expect("create text layout"));
+            }
             _ => return Err(MathMLParseError::AppendToFullNode)
         }
         Ok(())
@@ -147,7 +154,6 @@ impl Element {
     }
 
     fn from_mathml<R: Read>(reader: &mut EventReader<R>, rx: &mut RenderContext, fnt: &Font) -> Result<Element, MathMLParseError> {
-
         let mut els: Vec<Element> = Vec::new();
 
         loop {
@@ -185,7 +191,24 @@ impl Element {
             }
         }
     }
-}
+    fn bounds(&self) -> Rect {
+        match self {
+            &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
+                ly.unwrap().bounds()
+            },
+            &Element::Row(ref els) => {
+                els.iter().map(|e| e.bounds()).fold(Rect::xywh(1e9, 1e9, -1e9, -1e9), union_rect)
+            }
+        }
+    }
+
+    fn draw(&self, p: Point, rx: &mut RenderContext) {
+        match self {
+            &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
+            },
+        }
+    }
+} 
 
 pub struct MathExpression {
     root: Element
@@ -202,5 +225,6 @@ impl MathExpression {
     }
 
     pub fn draw(&self, p: Point, rx: &mut RenderContext) {
+        self.root.draw(rx, p);
     }
 }
