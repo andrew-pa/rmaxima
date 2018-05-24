@@ -57,6 +57,7 @@ pub enum Element {
     Fraction { numer: Box<Element>, denom: Box<Element> },
     Sqrt(Box<Element>),
     Root { base: Box<Element>, index: Box<Element> },
+    Fenced { open: String, close: String, seperator: String, children: Vec<Element> },
     Subscript { base: Box<Element>, script: Box<Element> },
     Superscript { base: Box<Element>, script: Box<Element> },
     Subsuperscript { base: Box<Element>, subscript: Box<Element>, superscript: Box<Element> }
@@ -127,6 +128,7 @@ impl Element {
                 }
                 Ok(())
             },
+            &mut Element::Fenced { ref mut children, .. } => { children.push(e); Ok(()) },
             &mut Element::Subscript { ref mut base, ref mut script } | Element::Superscript { ref mut base, ref mut script } => {
                 if base.is_placeholder() {
                     *base = Box::new(e);
@@ -153,23 +155,79 @@ impl Element {
         }
     }
 
+    fn set_script_level(&mut self, script_level: usize) {
+        match self {
+            &mut Element::Id(ref body, ref mut layout) |
+            &mut Element::Number(ref body, ref mut layout) |
+            &mut Element::Operator(ref body, ref mut layout) => {
+                layout.as_mut().unwrap().size_range(0..body.len() as u32, (18.0 - (script_level as f32)*3.0).max(6.0));
+            },
+            &mut Element::Row(ref mut els) => {
+                for e in els {
+                    e.set_script_level(script_level);
+                }
+            },
+            &mut Element::Fraction { ref mut numer, ref mut denom } => {
+                numer.set_script_level(script_level);
+                denom.set_script_level(script_level);
+            },
+            &mut Element::Sqrt(ref mut c) => {
+                c.set_script_level(script_level);
+            }
+            &mut Element::Root { ref mut base, ref mut index } => {
+                base.set_script_level(script_level);
+                index.set_script_level(script_level);
+            }
+            &mut Element::Fenced { ref mut children, .. } => {
+                for e in children {
+                    e.set_script_level(script_level);
+                }
+            }
+            &mut Element::Subscript { ref mut base, ref mut script } | &mut Element::Superscript { ref mut base, ref mut script } => {
+                base.set_script_level(script_level);
+                script.set_script_level(script_level);
+            }
+            &mut Element::Subsuperscript { ref mut base, ref mut subscript, ref mut superscript } => {
+                base.set_script_level(script_level);
+                subscript.set_script_level(script_level);
+                superscript.set_script_level(script_level);
+            }
+            _ => panic!("bounds for silly element")
+        }
+    }
+
     fn from_mathml<R: Read>(reader: &mut EventReader<R>, rx: &mut RenderContext, fnt: &Font) -> Result<Element, MathMLParseError> {
         let mut els: Vec<Element> = Vec::new();
-
+        let mut scriptlevel: usize = 0;
+        let mut scriptdelay = false;
         loop {
             match reader.next()? {
-                XmlEvent::StartElement { name, .. } => {
+                XmlEvent::StartElement { name, attributes, .. } => {
                     els.push(match name.local_name.as_str()  {
                         "mi" => Element::Id(String::new(), None),
                         "mo" => Element::Operator(String::new(), None),
                         "mn" => Element::Number(String::new(), None),
+                        "mspace" => { Element::Id(String::from(" "), None) },
                         "math" | "mrow" => Element::Row(Vec::new()),
                         "msqrt" => Element::Sqrt(Box::new(Element::ParsePlaceholder)),
                         "mfrac" => Element::Fraction { numer: Box::new(Element::ParsePlaceholder), denom: Box::new(Element::ParsePlaceholder) },
                         "mroot" => Element::Root { base: Box::new(Element::ParsePlaceholder), index: Box::new(Element::ParsePlaceholder) },
-                        "msub" => Element::Subscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) },
-                        "msup" => Element::Superscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) },
-                        "msubsup" => Element::Subsuperscript { base: Box::new(Element::ParsePlaceholder), subscript: Box::new(Element::ParsePlaceholder), superscript: Box::new(Element::ParsePlaceholder) },
+                        "mfenced" => {
+                            Element::Fenced {
+                                open: attributes.iter().find(|a| a.name.local_name == "open")
+                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::new()),
+                                close: attributes.iter().find(|a| a.name.local_name == "close")
+                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::new()),
+                                seperator: attributes.iter().find(|a| a.name.local_name == "seperators")
+                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::new()),
+                                children: Vec::new()
+                            }
+                        }
+                        "msub" => { scriptdelay=true; scriptlevel+=1; Element::Subscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) } },
+                        "msup" => { scriptdelay=true; scriptlevel+=1; Element::Superscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) } },
+                        "msubsup" => { scriptdelay=true; scriptlevel+=1; Element::Subsuperscript { base: Box::new(Element::ParsePlaceholder),
+                                                                subscript: Box::new(Element::ParsePlaceholder),
+                                                                superscript: Box::new(Element::ParsePlaceholder) } },
                         _ => return Err(MathMLParseError::UnexpectedXMLTag(name.local_name))
                     });
                 }
@@ -177,13 +235,23 @@ impl Element {
                     els.last_mut().ok_or_else(|| MathMLParseError::UnexpectedXMLEvent(XmlEvent::Characters(s.clone())))
                         .and_then(|e| e.set_body(s, rx, fnt))?;
                 }
+                XmlEvent::Whitespace(_) => {
+                }
                 e@XmlEvent::EndElement { .. } => {
                     if els.len() == 0 {
                         return Err(MathMLParseError::UnexpectedXMLEvent(e));
                     } else if els.len() == 1 {
                         return Ok(els.pop().unwrap());
                     } else {
-                        let el = els.pop().ok_or_else(|| MathMLParseError::UnexpectedXMLEvent(e))?;
+                        let mut el = els.pop().ok_or_else(|| MathMLParseError::UnexpectedXMLEvent(e))?;
+                        if scriptlevel > 0 {
+                            if !scriptdelay {
+                                el.set_script_level(scriptlevel);
+                                scriptlevel -= 1;
+                            } else {
+                                scriptdelay = false;
+                            }
+                        }
                         els.last_mut().unwrap().append_child(el)?;
                     }
                 }
@@ -223,22 +291,36 @@ impl Element {
                 b.w += 7.0 + i.w;
                 b
             }
+            &Element::Fenced { ref children, .. } => {
+                let (mut width, mut height) = (0.0, 0f32);
+                for b in children.iter().map(|e| e.bounds()) {
+                    width += b.x + b.w + 2.0;
+                    height = height.max(b.h);
+                }
+                Rect::xywh(0.0, 0.0, width, height)
+            },
             &Element::Subscript { ref base, ref script } => {
-                let bb = base.bounds();
+                let mut bb = base.bounds();
                 let sb = script.bounds();
-                union_rect(bb, sb.offset(Point::xy(bb.x+bb.w, bb.h+sb.h/2.0)))
+                bb.w += sb.w + 2.0;
+                bb.h += sb.h/2.0;
+                bb
             }
             &Element::Superscript { ref base, ref script } => {
-                let bb = base.bounds();
+                let mut bb = base.bounds();
                 let sb = script.bounds();
-                union_rect(bb, sb.offset(Point::xy(bb.x+bb.w, sb.h/2.0)))
+                bb.w += sb.w + 2.0;
+                bb.h += sb.h/2.0;
+                bb
             }
             &Element::Subsuperscript { ref base, ref subscript, ref superscript } => {
-                let bb = base.bounds();
+                let mut bb = base.bounds();
                 let sub = subscript.bounds();
                 let spb = superscript.bounds();
-                union_rect(bb, union_rect(sub.offset(Point::xy(bb.x+bb.w, bb.h + sub.h/2.0)), 
-                                          sub.offset(Point::xy(bb.x+bb.w, spb.h/2.0))))
+                bb.w += sub.w.max(spb.w) + 2.0;
+                bb.h += sub.h/2.0;
+                bb.h += spb.h/2.0;
+                bb
             }
             _ => panic!("bounds for silly element")
         }
@@ -293,6 +375,30 @@ impl Element {
                 draw_radical(rx, p, eb, ib.w);
                 base.draw(p + Point::xy(ib.w+7.0, 0.0), rx);
                 index.draw(p - Point::xy(0.0,ib.h/2.0), rx);
+            },
+            &Element::Fenced { ref children, .. } => {
+                let mut pp = p;
+                for e in children {
+                    e.draw(pp, rx);
+                    let eb = e.bounds();
+                    pp.x += eb.x+eb.w+2.0;
+                }
+            },
+            &Element::Subscript { ref base, ref script } => {
+                let b = base.bounds();
+                base.draw(p, rx);
+                script.draw(p + Point::xy(b.w+2.0, b.h/2.0), rx);
+            }
+            &Element::Superscript { ref base, ref script } => {
+                let b = base.bounds();
+                base.draw(p, rx);
+                script.draw(p + Point::xy(b.w+2.0, -b.h/2.0), rx);
+            }
+            &Element::Subsuperscript { ref base, ref subscript, ref superscript } => {
+                let b = base.bounds();
+                base.draw(p, rx);
+                subscript.draw(p + Point::xy(b.w+2.0, b.h/2.0), rx);
+                superscript.draw(p + Point::xy(b.w+2.0, -b.h/2.0), rx);
             }
             _ => panic!("draw silly element")
         }
@@ -311,6 +417,10 @@ impl MathExpression {
             e => return Err(MathMLParseError::UnexpectedXMLEvent(e))
         };
         Ok(MathExpression { root: Element::from_mathml(&mut parser, rx, font)? })
+    }
+
+    pub fn bounds(&self) -> Rect {
+        self.root.bounds()
     }
 
     pub fn draw(&self, p: Point, rx: &mut RenderContext) {
