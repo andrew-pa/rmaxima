@@ -98,7 +98,7 @@ impl MaximaApp {
         let math_font = rx.new_font("Cambria Math", 18.0, FontWeight::Regular, FontStyle::Normal)?;
         let mut proc = Command::new("C:/maxima-5.41.0a/clisp-2.49/base/lisp.exe")
             .args(vec!["-q", "-M", "C:/maxima-5.41.0a/lib/maxima/5.41.0a_dirty/binary-clisp/maxima.mem",
-                  "", "--", "-r", ":lisp ($load \"maximamathml\") (defun displa(exp) (print (cadr exp)) ($prmathml (caddr exp)) (terpri)) (setup-client 4444)\n"])
+                  "", "--", "-r", ":lisp ($load \"mathml\") (defun displa(exp) (print (cadr exp)) (mathml1 (caddr exp)) (terpri)) (setup-client 4444)\n"])
             .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         let listener = std::net::TcpListener::bind("127.0.0.1:4444").unwrap();
         let mut strm = listener.accept()?.0;
@@ -108,11 +108,58 @@ impl MaximaApp {
             font, math_font,
             maxima_proc: proc,
             maxima_strm: strm,
-            cells: vec![Cell::empty(0)], current_cell: 0, cursor_idx: 0,
+            cells: Vec::new(), current_cell: 0, cursor_idx: 0,
             input_regex: Regex::new(r"\(%i(\d+)\)")?,
-            output_regex: Regex::new(r"\(%o(\d+)\)(.+)")?,
+            output_regex: Regex::new(r"(?ms)\$%O(\d+)\s[[:cntrl:]]*(.*</math>)")?,//$((?s).*</math>)")?,
             mx
         })
+    }
+}
+
+impl MaximaApp {
+    fn update(&mut self, rx: &mut RenderContext) {
+        let mut new_in = String::new();
+        let mut buf = [0; 512];
+        loop {
+            match self.maxima_strm.read(&mut buf) {
+                Ok(len) => {
+                    if len == 0 { break; }
+                    new_in += &String::from_utf8_lossy(&buf[0..len]);
+                },
+                Err(e) => {
+                    match e.kind() {
+                        std::io::ErrorKind::WouldBlock => break,
+                        _ => panic!("error reading from stream: {:?}", e)
+                    }
+                }
+            }
+        }
+        if new_in.len() > 0 {
+            println!("in: \"{}\"", new_in);
+            for outputs in self.output_regex.captures_iter(&new_in) {
+                let index = outputs[1].parse().expect("parse output index");
+                let mut found = false;
+                for cell in self.cells.iter_mut() {
+                    if cell.index == index {
+                        cell.output_src = Some(String::from(outputs[2].trim()));
+                        cell.output = None;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    let mut c = Cell::empty(index);
+                    c.output_src = Some(String::from(outputs[2].trim()));
+                    self.cells.push(c);
+                }
+            }
+            if let Some(ref inp) = self.input_regex.captures(&new_in) {
+                let index = inp[1].parse().expect("parse output index");
+                self.cells.push(Cell::empty(index));
+                self.current_cell = self.cells.len()-1;
+                self.cursor_idx = 0;
+            }
+        }
     }
 }
 
@@ -120,7 +167,7 @@ impl App for MaximaApp {
 
     fn paint(&mut self, rx: &mut RenderContext) {
         let bnds = rx.bounds();
-        let mut data = [0; 512];
+        /*let mut data = [0; 512];
         match self.maxima_strm.read(&mut data) {
             Ok(len) => {
                 println!("--");
@@ -162,7 +209,8 @@ impl App for MaximaApp {
                     panic!("error reading from stream: {:?}", e);
                 }
             } 
-        }
+        }*/
+        self.update(rx);
         rx.clear(Color::rgb(0.0, 0.0, 0.0));
         rx.set_color(Color::rgb(0.8, 0.75, 0.7));
         let mut p = Point::xy(8.0, 8.0);
@@ -212,6 +260,7 @@ impl App for MaximaApp {
                         VirtualKeyCode::Return => {
                             if mods.shift {
                                 self.cells[cell].input.push(';');
+                                self.cells[cell].input_layout = None;
                             }
                             write!(self.maxima_strm, "{}", self.cells[cell].input).expect("write stream");
                             /*let mut data = [0; 512];
