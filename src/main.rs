@@ -98,11 +98,11 @@ impl MaximaApp {
         let math_font = rx.new_font("Cambria Math", 18.0, FontWeight::Regular, FontStyle::Normal)?;
         let mut proc = Command::new("C:/maxima-5.41.0a/clisp-2.49/base/lisp.exe")
             .args(vec!["-q", "-M", "C:/maxima-5.41.0a/lib/maxima/5.41.0a_dirty/binary-clisp/maxima.mem",
-                  "", "--", "-r", ":lisp (setup-client 4444)\nload(\"alt-display.mac\")$set_alt_display(2,mathml_display)$\n"])
+                  "", "--", "-r", ":lisp ($load \"maximamathml\") (defun displa(exp) (print (cadr exp)) ($prmathml (caddr exp)) (terpri)) (setup-client 4444)\n"])
             .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         let listener = std::net::TcpListener::bind("127.0.0.1:4444").unwrap();
         let mut strm = listener.accept()?.0;
-        //strm.set_nonblocking(true)?;
+        strm.set_nonblocking(true)?;
         let mx = mathml::MathExpression::from_mathml("<math><msup><mi>q</mi><mn>2</mn></msup><mo>*</mo><mroot><mfrac><mrow><mn>3</mn><mo>+</mo><mi>a</mi></mrow><mn>7</mn></mfrac><mrow><mn>3</mn><mo>-</mo><mi>d</mi></mrow></mroot></math>".as_bytes(), rx, &math_font)?;
         Ok(MaximaApp {
             font, math_font,
@@ -120,7 +120,7 @@ impl App for MaximaApp {
 
     fn paint(&mut self, rx: &mut RenderContext) {
         let bnds = rx.bounds();
-        /*let mut data = [0; 512];
+        let mut data = [0; 512];
         match self.maxima_strm.read(&mut data) {
             Ok(len) => {
                 println!("--");
@@ -129,23 +129,25 @@ impl App for MaximaApp {
                     if let Some(ref r) = self.input_regex.captures(&ln) {
                         println!("i cap = {:?}", r);
                         let index = r[1].parse().expect("parse index");
-                        if let Some((i, _)) = self.cells.iter().enumerate().find(|(_,c)| c.0.index == index) {
+                        if let Some((i, _)) = self.cells.iter().enumerate().find(|(_,c)| c.index == index) {
                             self.current_cell = i; // this is probably an error state. should parse out the error too
-                            self.cells[i].1 = None;
+                            self.cells[i].input_layout = None;
                         } else {
-                            self.cells.push((Cell { index: index, input: String::new(), output: None }, None));
+                            self.cells.push(Cell::empty(index));
                             self.current_cell = self.cells.len()-1;
                             self.cursor_idx = 0;
                         }
                     } else if let Some(ref r) = self.output_regex.captures(&ln) {
                         println!("o cap = {:?}", r);
                         let index = r[1].parse().expect("parse index");
-                        let found = self.cells.iter_mut().find(|c| c.0.index == index).map(|cell| {
-                            cell.0.output = Some(String::from(r[2].trim()));
-                            cell.1 = None;
+                        let found = self.cells.iter_mut().find(|c| c.index == index).map(|cell| {
+                            cell.output_src = Some(String::from(r[2].trim()));
+                            cell.output = None;
                         }).is_some();
                         if !found {
-                            self.cells.push((Cell { index: index, input: String::new(), output: Some(String::from(r[2].trim())) }, None));
+                            let mut c = Cell::empty(index);
+                            c.output_src = Some(String::from(r[2].trim()));
+                            self.cells.push(c);
                         }
                     } else {
                         println!("unk = {}", ln);
@@ -160,7 +162,7 @@ impl App for MaximaApp {
                     panic!("error reading from stream: {:?}", e);
                 }
             } 
-        }*/
+        }
         rx.clear(Color::rgb(0.0, 0.0, 0.0));
         rx.set_color(Color::rgb(0.8, 0.75, 0.7));
         let mut p = Point::xy(8.0, 8.0);
@@ -212,7 +214,7 @@ impl App for MaximaApp {
                                 self.cells[cell].input.push(';');
                             }
                             write!(self.maxima_strm, "{}", self.cells[cell].input).expect("write stream");
-                            let mut data = [0; 512];
+                            /*let mut data = [0; 512];
                             let mut resp = String::new();
                             loop { 
                                 let len = self.maxima_strm.read(&mut data).expect("read stream");
@@ -238,7 +240,7 @@ impl App for MaximaApp {
                                 }
                             }
                             println!("response = `{}`", resp);
-                            self.cells[cell].output_src = Some(resp);
+                            self.cells[cell].output_src = Some(resp);*/
                         }
                         VirtualKeyCode::Left => { if self.cursor_idx > 0 { self.cursor_idx -= 1; } }
                         VirtualKeyCode::Right => {
