@@ -13,14 +13,14 @@ pub enum MathMLParseError {
     UnexpectedXMLEvent(XmlEvent),
     UnexpectedXMLTag(String),
     AppendToLeaf,
-    AppendToFullNode
+    AppendToFullNode(&'static str)
 }
 
 impl ::std::fmt::Display for MathMLParseError {
     fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         match self {
             &MathMLParseError::AppendToLeaf => write!(fmt, "attempt to append to leaf node"),
-            &MathMLParseError::AppendToFullNode => write!(fmt, "attempt to append to full node"),
+            &MathMLParseError::AppendToFullNode(name) => write!(fmt, "attempt to append to full node: {}", name),
             &MathMLParseError::XMLError(ref e) => write!(fmt, "xml error: {}", e),
             &MathMLParseError::UnexpectedXMLEvent(ref e) => write!(fmt, "unexpected XML event: {:?}", e),
             &MathMLParseError::UnexpectedXMLTag(ref s) => write!(fmt, "unexpected XML tag: {}", s)
@@ -35,7 +35,7 @@ impl Error for MathMLParseError {
             &MathMLParseError::UnexpectedXMLEvent(_) => "unexpected XML event",
             &MathMLParseError::UnexpectedXMLTag(_) => "unexpected XML tag",
             &MathMLParseError::AppendToLeaf => "attempt to append to leaf",
-            &MathMLParseError::AppendToFullNode => "attempt to append to full node"
+            &MathMLParseError::AppendToFullNode(_) => "attempt to append to full node"
         }
     }
 }
@@ -89,7 +89,12 @@ impl Element {
                 *layout = rx.new_text_layout(&s, fnt, 512.0, 512.0).ok();
                 *body = s;
             }
-            _ => return Err(MathMLParseError::AppendToFullNode)
+            _ => {
+                let ly = rx.new_text_layout(&s, fnt, 512.0, 512.0).ok();
+                return self.append_child(Element::Id(s, ly, 0));
+                //println!("??? {}", s);
+                //return Err(MathMLParseError::AppendToFullNode("node isn't leaf"))
+            }
         }
         Ok(())
     }
@@ -103,7 +108,7 @@ impl Element {
                 } else if denom.is_placeholder() {
                     *denom = Box::new(e);
                 } else {
-                    return Err(MathMLParseError::AppendToFullNode)
+                    return Err(MathMLParseError::AppendToFullNode("fraction"))
                 }
                 Ok(())
             },
@@ -124,7 +129,7 @@ impl Element {
                 } else if index.is_placeholder() {
                     *index = Box::new(e);
                 } else {
-                    return Err(MathMLParseError::AppendToFullNode)
+                    return Err(MathMLParseError::AppendToFullNode("root"))
                 }
                 Ok(())
             },
@@ -134,13 +139,9 @@ impl Element {
                     *base = Box::new(e);
                 } else if script.is_placeholder() {
                     *script = Box::new(e);
-                    script.add_script_level(match self {
-                        &mut Element::Subscript {..} => -1,
-                        &mut Element::Superscript {..} => 1,
-                        _ => unreachable!()
-                    });
+                    script.add_script_level(1);
                 } else {
-                    return Err(MathMLParseError::AppendToFullNode)
+                    return Err(MathMLParseError::AppendToFullNode("sub/superscript"))
                 }
                 Ok(())
             },
@@ -149,12 +150,12 @@ impl Element {
                     *base = Box::new(e);
                 } else if subscript.is_placeholder() {
                     *subscript = Box::new(e);
-                    subscript.add_script_level(-1);
+                    subscript.add_script_level(1);
                 } else if superscript.is_placeholder() {
                     *superscript = Box::new(e);
                     superscript.add_script_level(1);
                 } else {
-                    return Err(MathMLParseError::AppendToFullNode)
+                    return Err(MathMLParseError::AppendToFullNode("subsuperscript"))
                 }
                 Ok(())
             },
@@ -207,13 +208,11 @@ impl Element {
 
     fn from_mathml<R: Read>(reader: &mut EventReader<R>, rx: &mut RenderContext, fnt: &Font) -> Result<Element, MathMLParseError> {
         let mut els: Vec<Element> = Vec::new();
-        let mut scriptlevel: usize = 0;
-        let mut scriptdelay = false;
         loop {
             match reader.next()? {
                 XmlEvent::StartElement { name, attributes, .. } => {
                     els.push(match name.local_name.as_str()  {
-                        "mi" => Element::Id(String::new(), None, 1),
+                        "mi" | "mtext" => Element::Id(String::new(), None, 1),
                         "mo" => Element::Operator(String::new(), None, 1),
                         "mn" => Element::Number(String::new(), None, 1),
                         "mspace" => { Element::Space(1) },
@@ -232,9 +231,9 @@ impl Element {
                                 children: Vec::new()
                             }
                         }
-                        "msub" => { scriptdelay=true; scriptlevel+=1; Element::Subscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) } },
-                        "msup" => { scriptdelay=true; scriptlevel+=1; Element::Superscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) } },
-                        "msubsup" => { scriptdelay=true; scriptlevel+=1; Element::Subsuperscript { base: Box::new(Element::ParsePlaceholder),
+                        "msub" => { Element::Subscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) } },
+                        "msup" => { Element::Superscript { base: Box::new(Element::ParsePlaceholder), script: Box::new(Element::ParsePlaceholder) } },
+                        "msubsup" => { Element::Subsuperscript { base: Box::new(Element::ParsePlaceholder),
                                                                 subscript: Box::new(Element::ParsePlaceholder),
                                                                 superscript: Box::new(Element::ParsePlaceholder) } },
                         _ => return Err(MathMLParseError::UnexpectedXMLTag(name.local_name))
@@ -420,6 +419,8 @@ impl MathExpression {
         let mut parser = ParserConfig::new()
             .add_entity("ExponentialE", "𝒆")
             .add_entity("ImaginaryI", "𝑖")
+            .add_entity("int", "∫")
+            .add_entity("DifferentialD", "𝑑")
             .create_reader(source);
         match parser.next()? {
             XmlEvent::StartDocument { .. } => {},

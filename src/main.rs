@@ -79,6 +79,7 @@ struct MaximaApp {
     cursor_idx: usize,
     input_regex: Regex,
     output_regex: Regex,
+    viewport_start: usize,
 }
 
 impl MaximaApp {
@@ -99,6 +100,7 @@ impl MaximaApp {
             cells: Vec::new(), current_cell: 0, cursor_idx: 0,
             input_regex: Regex::new(r"\(%i(\d+)\)")?,
             output_regex: Regex::new(r"(?ms)\$%O(\d+)\s[[:cntrl:]]*(.*</math>)")?,
+            viewport_start: 0
         })
     }
 }
@@ -160,13 +162,17 @@ impl App for MaximaApp {
         let mut p = Point::xy(8.0, 8.0);
         let fnt = self.font.clone();
         let math_fnt = self.math_font.clone();
-        for (i, c) in self.cells.iter_mut().enumerate() {
+        for (i, c) in self.cells.iter_mut().enumerate().skip(self.viewport_start) {
             c.draw(p, rx, &fnt, &math_fnt);
             let b = c.bounds();
             if i == self.current_cell {
                 c.draw_cursor(p, rx, self.cursor_idx);
             }
             p.y += b.h + 4.0;
+            if p.y > bnds.h {
+                self.viewport_start += 1;
+                break;
+            }
         }
     }
 
@@ -210,6 +216,8 @@ impl App for MaximaApp {
                                 self.cells[cell].input_layout = None;
                             }
                         }
+                        VirtualKeyCode::PageUp => { if self.viewport_start > 0 { self.viewport_start -= 1; } }
+                        VirtualKeyCode::PageDown => { if self.viewport_start < self.cells.len() { self.viewport_start += 1; } }
                         /*VirtualKeyCode::Up => { if self.current_cell > 0 { self.current_cell -= 1; } }
                           VirtualKeyCode::Down => { if self.current_cell < self.cells.len() { self.current_cell += 1; } }*/
                         _ => {}
