@@ -49,9 +49,9 @@ impl From<XmlError> for MathMLParseError {
 #[derive(Clone)]
 pub enum Element {
     ParsePlaceholder,
-    Id(String, Option<TextLayout>),
-    Number(String, Option<TextLayout>),
-    Operator(String, Option<TextLayout>),
+    Id(String, Option<TextLayout>, usize),
+    Number(String, Option<TextLayout>, usize),
+    Operator(String, Option<TextLayout>, usize),
     Space(usize),
     Row(Vec<Element>),
     Fraction { numer: Box<Element>, denom: Box<Element> },
@@ -83,10 +83,10 @@ impl Element {
 
     fn set_body(&mut self, s: String, rx: &mut RenderContext, fnt: &Font) -> Result<(), MathMLParseError> {
         match self {
-            &mut Element::Id(ref mut body, ref mut layout) |
-            &mut Element::Number(ref mut body, ref mut layout) |
-            &mut Element::Operator(ref mut body, ref mut layout) => {
-                *layout = Some(rx.new_text_layout(&s, fnt, 512.0, 512.0).expect("create text layout"));
+            &mut Element::Id(ref mut body, ref mut layout, ..) |
+            &mut Element::Number(ref mut body, ref mut layout, ..) |
+            &mut Element::Operator(ref mut body, ref mut layout, ..) => {
+                *layout = rx.new_text_layout(&s, fnt, 512.0, 512.0).ok();
                 *body = s;
             }
             _ => return Err(MathMLParseError::AppendToFullNode)
@@ -134,6 +134,11 @@ impl Element {
                     *base = Box::new(e);
                 } else if script.is_placeholder() {
                     *script = Box::new(e);
+                    script.add_script_level(match self {
+                        &mut Element::Subscript {..} => -1,
+                        &mut Element::Superscript {..} => 1,
+                        _ => unreachable!()
+                    });
                 } else {
                     return Err(MathMLParseError::AppendToFullNode)
                 }
@@ -144,8 +149,10 @@ impl Element {
                     *base = Box::new(e);
                 } else if subscript.is_placeholder() {
                     *subscript = Box::new(e);
+                    subscript.add_script_level(-1);
                 } else if superscript.is_placeholder() {
                     *superscript = Box::new(e);
+                    superscript.add_script_level(1);
                 } else {
                     return Err(MathMLParseError::AppendToFullNode)
                 }
@@ -155,43 +162,45 @@ impl Element {
         }
     }
 
-    fn set_script_level(&mut self, script_level: usize) {
+    fn add_script_level(&mut self, incr: isize) {
         match self {
-            &mut Element::Id(ref body, ref mut layout) |
-            &mut Element::Number(ref body, ref mut layout) |
-            &mut Element::Operator(ref body, ref mut layout) => {
-                layout.as_mut().unwrap().size_range(0..body.len() as u32, (18.0 - (script_level as f32)*3.0).max(6.0));
+            &mut Element::Id(ref body, ref mut layout, ref mut script_level) |
+            &mut Element::Number(ref body, ref mut layout, ref mut script_level) |
+            &mut Element::Operator(ref body, ref mut layout, ref mut script_level) => {
+                *script_level = (*script_level as isize + incr).max(0) as usize;
+                layout.as_mut().unwrap().size_range(0..body.len() as u32, (18.0 - (*script_level as f32)*3.0).max(6.0));
             },
             &mut Element::Row(ref mut els) => {
                 for e in els {
-                    e.set_script_level(script_level);
+                    e.add_script_level(incr);
                 }
             },
             &mut Element::Fraction { ref mut numer, ref mut denom } => {
-                numer.set_script_level(script_level);
-                denom.set_script_level(script_level);
+                numer.add_script_level(incr);
+                denom.add_script_level(incr);
             },
             &mut Element::Sqrt(ref mut c) => {
-                c.set_script_level(script_level);
+                c.add_script_level(incr);
             }
             &mut Element::Root { ref mut base, ref mut index } => {
-                base.set_script_level(script_level);
-                index.set_script_level(script_level);
+                base.add_script_level(incr);
+                index.add_script_level(incr);
             }
             &mut Element::Fenced { ref mut children, .. } => {
                 for e in children {
-                    e.set_script_level(script_level);
+                    e.add_script_level(incr);
                 }
             }
             &mut Element::Subscript { ref mut base, ref mut script } | &mut Element::Superscript { ref mut base, ref mut script } => {
-                base.set_script_level(script_level);
-                script.set_script_level(script_level);
+                base.add_script_level(incr);
+                script.add_script_level(incr);
             }
             &mut Element::Subsuperscript { ref mut base, ref mut subscript, ref mut superscript } => {
-                base.set_script_level(script_level);
-                subscript.set_script_level(script_level);
-                superscript.set_script_level(script_level);
+                base.add_script_level(incr);
+                subscript.add_script_level(incr);
+                superscript.add_script_level(incr);
             }
+            &mut Element::Space(size) => {}
             _ => panic!("bounds for silly element")
         }
     }
@@ -204,10 +213,10 @@ impl Element {
             match reader.next()? {
                 XmlEvent::StartElement { name, attributes, .. } => {
                     els.push(match name.local_name.as_str()  {
-                        "mi" => Element::Id(String::new(), None),
-                        "mo" => Element::Operator(String::new(), None),
-                        "mn" => Element::Number(String::new(), None),
-                        "mspace" => { Element::Id(String::from(" "), None) },
+                        "mi" => Element::Id(String::new(), None, 1),
+                        "mo" => Element::Operator(String::new(), None, 1),
+                        "mn" => Element::Number(String::new(), None, 1),
+                        "mspace" => { Element::Space(1) },
                         "math" | "mrow" => Element::Row(Vec::new()),
                         "msqrt" => Element::Sqrt(Box::new(Element::ParsePlaceholder)),
                         "mfrac" => Element::Fraction { numer: Box::new(Element::ParsePlaceholder), denom: Box::new(Element::ParsePlaceholder) },
@@ -215,11 +224,11 @@ impl Element {
                         "mfenced" => {
                             Element::Fenced {
                                 open: attributes.iter().find(|a| a.name.local_name == "open")
-                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::new()),
+                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::from("(")),
                                 close: attributes.iter().find(|a| a.name.local_name == "close")
-                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::new()),
+                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::from(")")),
                                 seperator: attributes.iter().find(|a| a.name.local_name == "seperators")
-                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::new()),
+                                    .map(|a| a.value.clone()).unwrap_or_else(|| String::from(",")),
                                 children: Vec::new()
                             }
                         }
@@ -244,14 +253,6 @@ impl Element {
                         return Ok(els.pop().unwrap());
                     } else {
                         let mut el = els.pop().ok_or_else(|| MathMLParseError::UnexpectedXMLEvent(e))?;
-                        if scriptlevel > 0 {
-                            if !scriptdelay {
-                                el.set_script_level(scriptlevel);
-                                scriptlevel -= 1;
-                            } else {
-                                scriptdelay = false;
-                            }
-                        }
                         els.last_mut().unwrap().append_child(el)?;
                     }
                 }
@@ -261,7 +262,7 @@ impl Element {
     }
     fn bounds(&self) -> Rect {
         match self {
-            &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
+            &Element::Id(_, ref ly, _) | &Element::Number(_, ref ly, _) | &Element::Operator(_, ref ly, _) => {
                 ly.as_ref().map(|l| {
                     let b = l.bounds();
                     b.offset(Point::xy(0.0, b.h/2.0))
@@ -322,6 +323,9 @@ impl Element {
                 bb.h += spb.h/2.0;
                 bb
             }
+            &Element::Space(size) => {
+                Rect::wh(0.0, 0.0)
+            }
             _ => panic!("bounds for silly element")
         }
     }
@@ -344,7 +348,7 @@ impl Element {
         //rx.stroke_rect(self.bounds().offset(p), 1.0);
 
         match self {
-            &Element::Id(_, ref ly) | &Element::Number(_, ref ly) | &Element::Operator(_, ref ly) => {
+            &Element::Id(_, ref ly, _) | &Element::Number(_, ref ly, _) | &Element::Operator(_, ref ly, _) => {
                 let ly = ly.as_ref().unwrap();
                 let b = ly.bounds();
                 rx.draw_text_layout(p - Point::xy(0.0, b.h/2.0), ly);
@@ -400,6 +404,7 @@ impl Element {
                 subscript.draw(p + Point::xy(b.w+2.0, b.h/2.0), rx);
                 superscript.draw(p + Point::xy(b.w+2.0, -b.h/2.0), rx);
             }
+            &Element::Space(size) => {}
             _ => panic!("draw silly element")
         }
     }
