@@ -416,7 +416,11 @@ pub struct MathExpression {
 
 impl MathExpression {
     pub fn from_mathml<R: Read>(source: R, rx: &mut RenderContext, font: &Font) -> Result<MathExpression, MathMLParseError> {
-        let mut parser = EventReader::new(source);
+        use xml::reader::ParserConfig;
+        let mut parser = ParserConfig::new()
+            .add_entity("ExponentialE", "𝒆")
+            .add_entity("ImaginaryI", "𝑖")
+            .create_reader(source);
         match parser.next()? {
             XmlEvent::StartDocument { .. } => {},
             e => return Err(MathMLParseError::UnexpectedXMLEvent(e))
