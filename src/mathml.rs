@@ -54,7 +54,7 @@ pub enum Element {
     Operator(String, Option<TextLayout>, usize),
     Space(usize),
     Row(Vec<Element>),
-    Fraction { numer: Box<Element>, denom: Box<Element> },
+    Fraction { numer: Box<Element>, denom: Box<Element>, script: bool },
     Sqrt(Box<Element>),
     Root { base: Box<Element>, index: Box<Element> },
     Fenced { open: String, close: String, seperator: String, children: Vec<Element> },
@@ -102,7 +102,7 @@ impl Element {
     fn append_child(&mut self, e: Element) -> Result<(), MathMLParseError> {
         match self {
             &mut Element::Row(ref mut children) => { children.push(e); Ok(()) },
-            &mut Element::Fraction { ref mut numer, ref mut denom } => {
+            &mut Element::Fraction { ref mut numer, ref mut denom, .. } => {
                 if numer.is_placeholder() {
                     *numer = Box::new(e);
                 } else if denom.is_placeholder() {
@@ -139,7 +139,7 @@ impl Element {
                     *base = Box::new(e);
                 } else if script.is_placeholder() {
                     *script = Box::new(e);
-                    script.add_script_level(1);
+                    script.add_script_level();
                 } else {
                     return Err(MathMLParseError::AppendToFullNode("sub/superscript"))
                 }
@@ -150,10 +150,10 @@ impl Element {
                     *base = Box::new(e);
                 } else if subscript.is_placeholder() {
                     *subscript = Box::new(e);
-                    subscript.add_script_level(1);
+                    subscript.add_script_level();
                 } else if superscript.is_placeholder() {
                     *superscript = Box::new(e);
-                    superscript.add_script_level(1);
+                    superscript.add_script_level();
                 } else {
                     return Err(MathMLParseError::AppendToFullNode("subsuperscript"))
                 }
@@ -163,43 +163,44 @@ impl Element {
         }
     }
 
-    fn add_script_level(&mut self, incr: isize) {
+    fn add_script_level(&mut self) {
         match self {
             &mut Element::Id(ref body, ref mut layout, ref mut script_level) |
             &mut Element::Number(ref body, ref mut layout, ref mut script_level) |
             &mut Element::Operator(ref body, ref mut layout, ref mut script_level) => {
-                *script_level = (*script_level as isize + incr).max(0) as usize;
+                *script_level = (*script_level as isize + 1) as usize;
                 layout.as_mut().unwrap().size_range(0..body.len() as u32, (18.0 - (*script_level as f32)*3.0).max(6.0));
             },
             &mut Element::Row(ref mut els) => {
                 for e in els {
-                    e.add_script_level(incr);
+                    e.add_script_level();
                 }
             },
-            &mut Element::Fraction { ref mut numer, ref mut denom } => {
-                numer.add_script_level(incr);
-                denom.add_script_level(incr);
+            &mut Element::Fraction { ref mut numer, ref mut denom, ref mut script } => {
+                *script = true;
+                numer.add_script_level();
+                denom.add_script_level();
             },
             &mut Element::Sqrt(ref mut c) => {
-                c.add_script_level(incr);
+                c.add_script_level();
             }
             &mut Element::Root { ref mut base, ref mut index } => {
-                base.add_script_level(incr);
-                index.add_script_level(incr);
+                base.add_script_level();
+                index.add_script_level();
             }
             &mut Element::Fenced { ref mut children, .. } => {
                 for e in children {
-                    e.add_script_level(incr);
+                    e.add_script_level();
                 }
             }
             &mut Element::Subscript { ref mut base, ref mut script } | &mut Element::Superscript { ref mut base, ref mut script } => {
-                base.add_script_level(incr);
-                script.add_script_level(incr);
+                base.add_script_level();
+                script.add_script_level();
             }
             &mut Element::Subsuperscript { ref mut base, ref mut subscript, ref mut superscript } => {
-                base.add_script_level(incr);
-                subscript.add_script_level(incr);
-                superscript.add_script_level(incr);
+                base.add_script_level();
+                subscript.add_script_level();
+                superscript.add_script_level();
             }
             &mut Element::Space(size) => {}
             _ => panic!("bounds for silly element")
@@ -212,13 +213,13 @@ impl Element {
             match reader.next()? {
                 XmlEvent::StartElement { name, attributes, .. } => {
                     els.push(match name.local_name.as_str()  {
-                        "mi" | "mtext" => Element::Id(String::new(), None, 1),
-                        "mo" => Element::Operator(String::new(), None, 1),
-                        "mn" => Element::Number(String::new(), None, 1),
+                        "mi" | "mtext" => Element::Id(String::new(), None, 0),
+                        "mo" => Element::Operator(String::new(), None, 0),
+                        "mn" => Element::Number(String::new(), None, 0),
                         "mspace" => { Element::Space(1) },
                         "math" | "mrow" => Element::Row(Vec::new()),
                         "msqrt" => Element::Sqrt(Box::new(Element::ParsePlaceholder)),
-                        "mfrac" => Element::Fraction { numer: Box::new(Element::ParsePlaceholder), denom: Box::new(Element::ParsePlaceholder) },
+                        "mfrac" => Element::Fraction { numer: Box::new(Element::ParsePlaceholder), denom: Box::new(Element::ParsePlaceholder), script: false },
                         "mroot" => Element::Root { base: Box::new(Element::ParsePlaceholder), index: Box::new(Element::ParsePlaceholder) },
                         "mfenced" => {
                             Element::Fenced {
@@ -275,10 +276,14 @@ impl Element {
                 }
                 Rect::xywh(0.0, 0.0, width, height)
             },
-            &Element::Fraction { ref numer, ref denom } => {
+            &Element::Fraction { ref numer, ref denom, script } => {
                 let nb = numer.bounds();
                 let db = denom.bounds();
-                Rect::xywh(0.0, 0.0, nb.w.max(db.w), nb.h + db.h + 2.0)
+                if script {
+                    Rect::xywh(0.0, 0.0, nb.w + db.w + 8.0, nb.h.max(db.h))
+                } else {
+                    Rect::xywh(0.0, 0.0, nb.w.max(db.w), nb.h + db.h + 2.0)
+                }
             },
             &Element::Sqrt(ref c) => {
                 let mut b = c.bounds();
@@ -297,7 +302,7 @@ impl Element {
                     width += b.x + b.w + 2.0;
                     height = height.max(b.h);
                 }
-                Rect::xywh(0.0, 0.0, width, height)
+                Rect::xywh(0.0, 0.0, width + 4.0, height)
             },
             &Element::Subscript { ref base, ref script } => {
                 let mut bb = base.bounds();
@@ -344,6 +349,15 @@ impl Element {
             rx.draw_line(p4, p5, 1.0);
         }
 
+        fn draw_fence(rx: &mut RenderContext, p: Point, w: f32, h: f32) {
+            rx.draw_line(p+Point::y(-h*0.5), p+Point::xy(4.0, -h*0.5), 1.0);
+            rx.draw_line(p+Point::y(-h*0.5), p+Point::y(h*0.5), 1.0);
+            rx.draw_line(p+Point::y(h*0.5), p+Point::xy(4.0, h*0.5), 1.0);
+            rx.draw_line(p+Point::xy(w-4.0, -h*0.5), p+Point::xy(w + 2.0, -h*0.5), 1.0);
+            rx.draw_line(p+Point::xy(w + 2.0, -h*0.5), p+Point::xy(w + 2.0, h*0.5), 1.0);
+            rx.draw_line(p+Point::xy(w-4.0, h*0.5), p+Point::xy(w + 2.0, h*0.5), 1.0);
+        }
+
         //rx.stroke_rect(self.bounds().offset(p), 1.0);
 
         match self {
@@ -360,12 +374,22 @@ impl Element {
                     pp.x += eb.x+eb.w+2.0;
                 }
             },
-            &Element::Fraction { ref numer, ref denom } => {
+            &Element::Fraction { ref numer, ref denom, script } => {
                 let nb = numer.bounds();
                 let db = denom.bounds();
-                numer.draw(p - Point::xy(0.0, nb.h / 2.0 + 1.0), rx);
-                rx.draw_line(p, p + Point::xy(nb.w.max(db.w), 0.0), 1.0);
-                denom.draw(p + Point::xy(0.0, db.h / 2.0 + 1.0), rx);
+                if script {
+                    let h = nb.h.max(db.h);
+                    numer.draw(p, rx);
+                    if nb.w > 30.0 { draw_fence(rx, p, nb.w, nb.h); }
+                    rx.draw_line(p+Point::xy(nb.w+1.0, h/2.0), p+Point::xy(nb.w+4.0, -h/2.0), 1.0);
+                    denom.draw(p + Point::x(nb.w + 8.0), rx);
+                    if db.w > 30.0 { draw_fence(rx, p + Point::x(nb.w + 8.0), db.w, db.h); }
+                }
+                else {
+                    numer.draw(p - Point::xy(0.0, nb.h / 2.0 + 1.0), rx);
+                    rx.draw_line(p, p + Point::xy(nb.w.max(db.w), 0.0), 1.0);
+                    denom.draw(p + Point::xy(0.0, db.h / 2.0 + 1.0), rx);
+                }
             },
             &Element::Sqrt(ref el) => {
                 let eb = el.bounds();
@@ -381,27 +405,31 @@ impl Element {
             },
             &Element::Fenced { ref children, .. } => {
                 let mut pp = p;
+                let mut h = 0f32;
                 for e in children {
-                    e.draw(pp, rx);
+                    e.draw(pp + Point::x(2.0), rx);
                     let eb = e.bounds();
                     pp.x += eb.x+eb.w+2.0;
+                    h = h.max(eb.h);
                 }
+                let w = pp.x-p.x;
+                draw_fence(rx, p, w, h);
             },
             &Element::Subscript { ref base, ref script } => {
                 let b = base.bounds();
                 base.draw(p, rx);
-                script.draw(p + Point::xy(b.w+2.0, b.h/2.0), rx);
+                script.draw(p + Point::xy(b.w+2.0, b.h/3.0), rx);
             }
             &Element::Superscript { ref base, ref script } => {
                 let b = base.bounds();
                 base.draw(p, rx);
-                script.draw(p + Point::xy(b.w+2.0, -b.h/2.0), rx);
+                script.draw(p + Point::xy(b.w+2.0, -b.h/3.0), rx);
             }
             &Element::Subsuperscript { ref base, ref subscript, ref superscript } => {
                 let b = base.bounds();
                 base.draw(p, rx);
-                subscript.draw(p + Point::xy(b.w+2.0, b.h/2.0), rx);
-                superscript.draw(p + Point::xy(b.w+2.0, -b.h/2.0), rx);
+                subscript.draw(p + Point::xy(b.w+2.0, b.h/3.0), rx);
+                superscript.draw(p + Point::xy(b.w+2.0, -b.h/3.0), rx);
             }
             &Element::Space(size) => {}
             _ => panic!("draw silly element")
@@ -417,6 +445,7 @@ impl MathExpression {
     pub fn from_mathml<R: Read>(source: R, rx: &mut RenderContext, font: &Font) -> Result<MathExpression, MathMLParseError> {
         use xml::reader::ParserConfig;
         let mut parser = ParserConfig::new()
+            .add_entity("pi", "𝜋")
             .add_entity("ExponentialE", "𝒆")
             .add_entity("ImaginaryI", "𝑖")
             .add_entity("int", "∫")
